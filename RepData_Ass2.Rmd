@@ -1,0 +1,190 @@
+---
+title: "RepResearch_PeerAssessment2"
+output: html_document
+---
+#Impact of Severe Weather Events on Public Health and Economy in the US
+
+## Synopsis
+This project uses the U.S. NOAA storm database to explore the most severe weather events for human health and economy in the US. The NOAA Storm Database records the major storm and severe weather events in the US from 1950 to 2011. The basic goal of this assignment is to analyse this database, to address the following questions:
+
+1. Which weather types are most harmful for population health?
+2. Which weather types cause most economic damage?
+
+To do this analysis the data from the database was processed to obtain the relevant information as followed:
+
+## Basic setting and download of the data
+```{r}
+echo = TRUE
+options(scipen = 1)
+library(plyr)
+
+# find data and download
+if (!file.exists("StormData.csv.bz2")) {
+  download.file("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2", destfile="StormData.csv.bz2", method="curl")
+}
+# read data in
+stormdata <- read.csv(bzfile("StormData.csv.bz2"), header=TRUE, stringsAsFactors=FALSE)
+
+# show columns
+head(stormdata, 3)
+dim(stormdata)
+
+# number of different cases of EVTYPE
+length(unique(stormdata$EVTYPE))
+```
+There are 37 columns and 902297 rows of data from 1950 to 2011. There are 985 event types in column EVTYPE.
+
+## Data processing
+1. We reduce the number of columns in the data to the data we will need for our analysis.
+2. For simplification, we change the eventtypes and the exponent columns to lower case.
+```{r}
+# select the important columns for the analysis
+
+reducedcol <- c("BGN_DATE", "EVTYPE", "FATALITIES", "INJURIES", "PROPDMG", "PROPDMGEXP", "CROPDMG", "CROPDMGEXP")
+
+reduceddata <- stormdata[reducedcol]
+
+# EVTYPE and PROPDMGEXP and CROPDMGEXP to lower case
+
+lowevty <- tolower(reduceddata$EVTYPE)
+lowexp1 <- tolower(reduceddata$PROPDMGEXP)
+lowexp2 <- tolower(reduceddata$CROPDMGEXP)
+
+reduceddata$EVTYPE <- lowevty
+reduceddata$PROPDMGEXP <- lowexp1
+reduceddata$CROPDMGEXP <- lowexp2
+
+rm("lowevty", "lowexp1", "lowexp2")
+```
+
+3. Then we add an additional column indicating the year of the events. Using this year data we make an histogram to get an overview of the data.
+```{r}
+# sets BGN_DATe as numeric and a date
+reduceddata$YEAR <- as.numeric(format(as.Date(reduceddata$BGN_DATE, format = "%m/%d/%Y %H:%M:%S"), "%Y"))
+
+# show that YEAR is added
+head(reduceddata, 2)
+# make a histogramm of the data per year
+hist(reduceddata$YEAR, breaks = 40)
+```
+The majority of events is recorded after 1995.
+4. We reduce the data by discarding all events before 1995. This is also to improve data quality, as recording is more standarized in this period.
+```{r}
+# data from 1996 to 2011
+eventnew <- reduceddata[ which(reduceddata$YEAR >= 1995), ]
+```
+5. We are interested in the events that resulted in injuries/fatalities or economic damage (property and crop). So we discard all data with no/0 entry in all of these columns.
+```{r}
+# removes all rows with zero DMG/INJURIES/FATALATIES
+eventnew <- eventnew[rowSums(eventnew[ , c( 3, 4, 5, 7)]) > 0, ]
+```
+6. Now we try to reduce the "messy" event type data by pooling some similar event types. I did not do this for all. Just to reduce it a bit.
+```{r}
+# try to reduce the different cases for EVTYPE
+eventnew[grepl("wind|winds|typhoon|hurricane", eventnew$EVTYPE, ignore.case = TRUE), "event"] <- "wind&hurricane"
+eventnew[grepl("tstm|thunderstorm", eventnew$EVTYPE, ignore.case = TRUE), "event"] <- "thunderstorm"
+eventnew[grepl("cold|icy|ice|chill|freeze|frost", eventnew$EVTYPE, ignore.case = TRUE), "event"] <- "cold&ice"
+eventnew[grepl("tornado", eventnew$EVTYPE, ignore.case = TRUE), "event"] <- "tornado"
+eventnew[grepl("snow", eventnew$EVTYPE, ignore.case = TRUE), "event"] <- "snow&ice"
+eventnew[grepl("flood", eventnew$EVTYPE, ignore.case = TRUE), "event"] <- "flood"
+
+eventnew$event <- replace(eventnew$event, which(is.na(eventnew$event) ==TRUE), "0")
+eventnew$DMGEVENT <- ifelse (eventnew$event == 0,  eventnew$DMGEVENT <- eventnew$EVTYPE, eventnew$DMGEVENT <- eventnew$event)
+
+eventnew$event <- NULL
+eventnew$EVTYPE <- NULL
+
+tail(eventnew, 5)
+length(unique(eventnew$DMGEVENT))
+```
+Now, the data has 135 event types (reduced from 985).
+
+7. This will change the property and crop damage to real numerical values and remove the exponent column.
+```{r}
+# change the exp to numbers
+eventnew$PEXP <- ifelse(eventnew$PROPDMGEXP == "k", 3, 
+                        ifelse(eventnew$PROPDMGEXP == "h", 2, 
+                               ifelse(eventnew$PROPDMGEXP == "m", 6, 
+                                      ifelse(eventnew$PROPDMGEXP == "b", 9, 0))))
+
+eventnew$CEXP <- ifelse(eventnew$CROPDMGEXP == "k", 3, 
+                        ifelse(eventnew$CROPDMGEXP == "h", 2, 
+                               ifelse(eventnew$CROPDMGEXP == "m", 6, 
+                                      ifelse(eventnew$CROPDMGEXP == "b", 9, 0))))
+# calculates the money value
+eventnew$PROPDAMAGE <- eventnew$PROPDMG * 10^eventnew$PEXP
+eventnew$CROPDAMAGE <- eventnew$CROPDMG * 10^eventnew$CEXP
+# removes these columns
+eventnew$PROPDMG <- NULL
+eventnew$CROPDMG <- NULL
+eventnew$PROPDMGEXP <- NULL
+eventnew$CROPDMGEXP <- NULL
+eventnew$PEXP <- NULL
+eventnew$CEXP <- NULL
+
+tail(eventnew,5)
+```
+# Results
+## Injuries and Fatalities
+Which weather events have the most impact on public health (in terms of injuries and fatalaties)?
+```{r}
+library(ggplot2)
+library(gridExtra)
+# results injuries & fatalities
+# makes two data frames containing the top 10 events causing injuries and fatalaties
+injuries <- aggregate(eventnew$INJURIES, by = list(eventnew$DMGEVENT), "sum")
+names(injuries) <- c("event", "injuries")
+injuries <- arrange(injuries, desc(injuries))
+topinjuries <- injuries[1:10,]
+
+fatalities <- aggregate(eventnew$FATALITIES, by = list(eventnew$DMGEVENT), "sum")
+names(fatalities) <- c("event", "fatalities")
+fatalities <- arrange(fatalities, desc(fatalities))
+topfatalities <- fatalities[1:10,]
+
+# makes the plot
+ploti <- ggplot(data = topinjuries, aes(event, y = injuries))
+ploti <- ploti + geom_bar(colour = "black", fill = "blue", stat="identity")
+ploti <- ploti + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ploti <- ploti + labs(x="Weather Type", y="Injuries", title="Top 10 Weather Events\n Causing Injuries")
+
+plotf <- ggplot(data = topfatalities, aes(event, y = fatalities))
+plotf <- plotf + geom_bar(colour = "black", fill = "red", stat="identity")
+plotf <- plotf + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+plotf <- plotf + labs(x="Weather Type", y="Fatalities", title="Top 10 Weather Events\n Causing Fatalities")
+
+grid.arrange(ploti, plotf, ncol=2)
+```
+The data shows that most injuries are caused by tornados. Heat is the most frequent cause of death and tornados are the second most frequent.
+
+## Property and Crop Damage
+Which weather types have the most economic consequences?
+```{r}
+# damage, makes two data frames for top 10 property and crop damage events (this is perhaps not necessary...)
+prop <- aggregate(eventnew$PROPDAMAGE, by = list(eventnew$DMGEVENT), "sum")
+names(prop) <- c("event", "propdamage")
+prop <- arrange(prop, desc(propdamage))
+topprop <- prop[1:10,]
+
+crop <- aggregate(eventnew$CROPDAMAGE, by = list(eventnew$DMGEVENT), "sum")
+names(crop) <- c("event", "cropdamage")
+crop <- arrange(crop, desc(cropdamage))
+topcrop <- crop[1:10,]
+
+# makes the plot
+plotp <- ggplot(data = topprop, aes(event, y = propdamage / 1000000000))
+plotp <- plotp + geom_bar(colour = "black", fill = "aquamarine", stat="identity")
+plotp <- plotp + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+plotp <- plotp + labs(x="Weather Type", y="Property Damage in Billion US$", title="Top 10 Weather Events\n Causing Property Damage")
+
+plotc <- ggplot(data = topcrop, aes(event, y = cropdamage / 1000000000))
+plotc <- plotc + geom_bar(colour = "black", fill = "darkorchid", stat="identity")
+plotc <- plotc + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+plotc <- plotc + labs(x="Weather Type", y="Crop Damage in Billion US$", title="Top 10 Weather Events\n Causing Crop Damage")
+
+grid.arrange(plotp, plotc, ncol=2)
+```
+Flooding caused the most property damage. Drought caused the most crop damage, followed by flood and hurricane types of wind.
+
+## Summary
+Tornados caused by far the most injuries, whereas heat caused the most fatalaties. Flooding caused the most property damage and drought the most agricultural damage.
